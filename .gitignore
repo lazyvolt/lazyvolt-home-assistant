@@ -19,3 +19,6 @@ ha-config/home-assistant_v2.db-shm
 ha-config/home-assistant_v2.db-wal
 ha-config/home-assistant_v2.db-journal
 ha-config/blueprints/
+
+# IDE
+.idea/
