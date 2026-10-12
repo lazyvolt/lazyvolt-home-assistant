@@ -6,9 +6,10 @@ from unittest.mock import AsyncMock
 import pytest
 from homeassistant.core import HomeAssistant, ServiceCall, callback
 
-from custom_components.lazyvolt.api import LazyVoltApiError
+from homeassistant.exceptions import ConfigEntryAuthFailed
+
+from custom_components.lazyvolt.api import LazyVoltApiError, LazyVoltAuthError
 from custom_components.lazyvolt.coordinator import LazyVoltCoordinator
-from tests.conftest import MOCK_PEBLAR_ENTRY_ID
 
 
 @pytest.fixture
@@ -26,8 +27,8 @@ def service_calls(hass: HomeAssistant) -> list[ServiceCall]:
     return calls
 
 
-def _make_coordinator(hass: HomeAssistant, mock_api, mock_entity_ids) -> LazyVoltCoordinator:
-    coordinator = LazyVoltCoordinator(hass, mock_api, MOCK_PEBLAR_ENTRY_ID)
+def _make_coordinator(hass: HomeAssistant, entry, mock_api, mock_entity_ids) -> LazyVoltCoordinator:
+    coordinator = LazyVoltCoordinator(hass, entry, mock_api)
     coordinator._entity_ids = mock_entity_ids
     return coordinator
 
@@ -37,10 +38,10 @@ def _set_states(hass: HomeAssistant, states: dict[str, str]) -> None:
         hass.states.async_set(entity_id, state_value)
 
 
-async def test_solar_mode_sets_smart_solar(hass, mock_api, mock_entity_ids, service_calls):
+async def test_solar_mode_sets_smart_solar(hass, mock_config_entry, mock_api, mock_entity_ids, service_calls):
     """SOLAR decision → Peblar smart_charging set to smart_solar."""
     mock_api.get_decision = AsyncMock(return_value={"mode": "SOLAR"})
-    coordinator = _make_coordinator(hass, mock_api, mock_entity_ids)
+    coordinator = _make_coordinator(hass, mock_config_entry, mock_api, mock_entity_ids)
     _set_states(hass, {
         mock_entity_ids["smart_charging"]: "default",
         mock_entity_ids["charge"]: "on",
@@ -56,10 +57,10 @@ async def test_solar_mode_sets_smart_solar(hass, mock_api, mock_entity_ids, serv
     assert any(c.data.get("option") == "smart_solar" for c in select_calls)
 
 
-async def test_max_mode_sets_default(hass, mock_api, mock_entity_ids, service_calls):
+async def test_max_mode_sets_default(hass, mock_config_entry, mock_api, mock_entity_ids, service_calls):
     """MAX decision → Peblar smart_charging set to default."""
     mock_api.get_decision = AsyncMock(return_value={"mode": "MAX"})
-    coordinator = _make_coordinator(hass, mock_api, mock_entity_ids)
+    coordinator = _make_coordinator(hass, mock_config_entry, mock_api, mock_entity_ids)
     _set_states(hass, {
         mock_entity_ids["smart_charging"]: "smart_solar",
         mock_entity_ids["charge"]: "on",
@@ -74,10 +75,10 @@ async def test_max_mode_sets_default(hass, mock_api, mock_entity_ids, service_ca
     assert any(c.data.get("option") == "default" for c in select_calls)
 
 
-async def test_standby_turns_off_charger(hass, mock_api, mock_entity_ids, service_calls):
+async def test_standby_turns_off_charger(hass, mock_config_entry, mock_api, mock_entity_ids, service_calls):
     """STANDBY decision → charge switch turned off."""
     mock_api.get_decision = AsyncMock(return_value={"mode": "STANDBY"})
-    coordinator = _make_coordinator(hass, mock_api, mock_entity_ids)
+    coordinator = _make_coordinator(hass, mock_config_entry, mock_api, mock_entity_ids)
     _set_states(hass, {
         mock_entity_ids["charge"]: "on",
         mock_entity_ids["cp_state"]: "suspended",
@@ -91,10 +92,10 @@ async def test_standby_turns_off_charger(hass, mock_api, mock_entity_ids, servic
     assert any(c.service == "turn_off" for c in switch_calls)
 
 
-async def test_mode_not_reapplied_when_already_set(hass, mock_api, mock_entity_ids, service_calls):
+async def test_mode_not_reapplied_when_already_set(hass, mock_config_entry, mock_api, mock_entity_ids, service_calls):
     """Smart charging mode is not re-set when Peblar already has correct mode."""
     mock_api.get_decision = AsyncMock(return_value={"mode": "SOLAR"})
-    coordinator = _make_coordinator(hass, mock_api, mock_entity_ids)
+    coordinator = _make_coordinator(hass, mock_config_entry, mock_api, mock_entity_ids)
     _set_states(hass, {
         mock_entity_ids["smart_charging"]: "smart_solar",  # already correct
         mock_entity_ids["charge"]: "on",
@@ -109,10 +110,10 @@ async def test_mode_not_reapplied_when_already_set(hass, mock_api, mock_entity_i
     assert len(select_calls) == 0
 
 
-async def test_progress_posts_lifetime_energy_in_wh(hass, mock_api, mock_entity_ids, service_calls):
+async def test_progress_posts_lifetime_energy_in_wh(hass, mock_config_entry, mock_api, mock_entity_ids, service_calls):
     """Lifetime energy (kWh) is converted to Wh and posted to progress endpoint."""
     mock_api.get_decision = AsyncMock(return_value={"mode": "SOLAR"})
-    coordinator = _make_coordinator(hass, mock_api, mock_entity_ids)
+    coordinator = _make_coordinator(hass, mock_config_entry, mock_api, mock_entity_ids)
     _set_states(hass, {
         mock_entity_ids["smart_charging"]: "smart_solar",
         mock_entity_ids["charge"]: "on",
@@ -126,10 +127,10 @@ async def test_progress_posts_lifetime_energy_in_wh(hass, mock_api, mock_entity_
     mock_api.post_progress.assert_called_once_with(12345)
 
 
-async def test_telemetry_maps_cp_state_to_cloud_status(hass, mock_api, mock_entity_ids, service_calls):
+async def test_telemetry_maps_cp_state_to_cloud_status(hass, mock_config_entry, mock_api, mock_entity_ids, service_calls):
     """Peblar no_ev_connected maps to Cloud no_vehicle status."""
     mock_api.get_decision = AsyncMock(return_value={"mode": "STANDBY"})
-    coordinator = _make_coordinator(hass, mock_api, mock_entity_ids)
+    coordinator = _make_coordinator(hass, mock_config_entry, mock_api, mock_entity_ids)
     _set_states(hass, {
         mock_entity_ids["charge"]: "off",
         mock_entity_ids["cp_state"]: "no_ev_connected",
@@ -143,21 +144,21 @@ async def test_telemetry_maps_cp_state_to_cloud_status(hass, mock_api, mock_enti
     assert call_kwargs["charger_status"] == "no_vehicle"
 
 
-async def test_update_fails_gracefully_when_cloud_unreachable(hass, mock_api, mock_entity_ids):
+async def test_update_fails_gracefully_when_cloud_unreachable(hass, mock_config_entry, mock_api, mock_entity_ids):
     """UpdateFailed is raised when Cloud decision endpoint is unreachable."""
     from homeassistant.helpers.update_coordinator import UpdateFailed
     mock_api.get_decision = AsyncMock(side_effect=LazyVoltApiError("Cannot connect"))
-    coordinator = _make_coordinator(hass, mock_api, mock_entity_ids)
+    coordinator = _make_coordinator(hass, mock_config_entry, mock_api, mock_entity_ids)
 
     with pytest.raises(UpdateFailed):
         await coordinator._async_update_data()
 
 
-async def test_telemetry_failure_does_not_fail_update(hass, mock_api, mock_entity_ids, service_calls):
+async def test_telemetry_failure_does_not_fail_update(hass, mock_config_entry, mock_api, mock_entity_ids, service_calls):
     """Telemetry POST failure is swallowed — coordinator update succeeds."""
     mock_api.get_decision = AsyncMock(return_value={"mode": "SOLAR"})
     mock_api.post_telemetry = AsyncMock(side_effect=LazyVoltApiError("Telemetry failed"))
-    coordinator = _make_coordinator(hass, mock_api, mock_entity_ids)
+    coordinator = _make_coordinator(hass, mock_config_entry, mock_api, mock_entity_ids)
     _set_states(hass, {
         mock_entity_ids["smart_charging"]: "smart_solar",
         mock_entity_ids["charge"]: "on",
@@ -170,10 +171,10 @@ async def test_telemetry_failure_does_not_fail_update(hass, mock_api, mock_entit
     assert data["mode"] == "SOLAR"
 
 
-async def test_single_phase_detected_from_force_single_phase_switch(hass, mock_api, mock_entity_ids, service_calls):
+async def test_single_phase_detected_from_force_single_phase_switch(hass, mock_config_entry, mock_api, mock_entity_ids, service_calls):
     """force_single_phase switch on → phases reported as 1."""
     mock_api.get_decision = AsyncMock(return_value={"mode": "SOLAR"})
-    coordinator = _make_coordinator(hass, mock_api, mock_entity_ids)
+    coordinator = _make_coordinator(hass, mock_config_entry, mock_api, mock_entity_ids)
     _set_states(hass, {
         mock_entity_ids["smart_charging"]: "smart_solar",
         mock_entity_ids["charge"]: "on",
@@ -187,3 +188,36 @@ async def test_single_phase_detected_from_force_single_phase_switch(hass, mock_a
 
     call_kwargs = mock_api.post_telemetry.call_args[0][0]
     assert call_kwargs["charger_phases"] == 1
+
+
+@pytest.mark.parametrize(
+    "decision",
+    [{}, {"mode": None}, {"mode": "solar"}, {"mode": "TURBO"}, {"message": "Server Error"}, []],
+    ids=["empty", "null_mode", "lowercase", "unknown_mode", "error_body", "not_an_object"],
+)
+async def test_unrecognised_decision_leaves_charger_untouched(
+    hass, mock_config_entry, mock_api, mock_entity_ids, service_calls, decision
+):
+    """A malformed or unexpected Cloud response must never energise the charger."""
+    mock_api.get_decision = AsyncMock(return_value=decision)
+    coordinator = _make_coordinator(hass, mock_config_entry, mock_api, mock_entity_ids)
+    _set_states(hass, {
+        mock_entity_ids["smart_charging"]: "default",
+        mock_entity_ids["charge"]: "off",
+        mock_entity_ids["cp_state"]: "suspended",
+    })
+
+    data = await coordinator._async_update_data()
+
+    assert service_calls == []
+    assert data["mode"] is None
+    assert mock_api.post_telemetry.call_args[0][0]["mode"] is None
+
+
+async def test_rejected_token_starts_reauth(hass, mock_config_entry, mock_api, mock_entity_ids):
+    """Cloud revoked the token → ConfigEntryAuthFailed so HA prompts the user to log in again."""
+    mock_api.get_decision = AsyncMock(side_effect=LazyVoltAuthError("Cloud token rejected"))
+    coordinator = _make_coordinator(hass, mock_config_entry, mock_api, mock_entity_ids)
+
+    with pytest.raises(ConfigEntryAuthFailed):
+        await coordinator._async_update_data()

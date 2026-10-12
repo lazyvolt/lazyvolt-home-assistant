@@ -11,6 +11,7 @@
           "password": "Password"
         },
         "data_description": {
+          "edge_name": "Must be unique per charger. Reusing a name disconnects the edge that already uses it.",
           "email": "Your lazyvolt.com account email",
           "password": "Your lazyvolt.com account password"
         }
@@ -21,16 +22,50 @@
         "data": {
           "peblar_entry_id": "Peblar device"
         }
+      },
+      "reauth_confirm": {
+        "title": "Reconnect to LazyVolt Cloud",
+        "description": "LazyVolt Cloud no longer accepts the token for edge {edge_name}. Log in again to keep controlling your charger.",
+        "data": {
+          "email": "Email",
+          "password": "Password"
+        },
+        "data_description": {
+          "email": "Your lazyvolt.com account email",
+          "password": "Your lazyvolt.com account password"
+        }
       }
     },
     "abort": {
       "no_peblar": "No Peblar integration found. Please set up the Peblar integration first.",
-      "already_configured": "LazyVolt is already configured."
+      "already_configured": "Every Peblar charger is already controlled by LazyVolt.",
+      "reauth_successful": "Reconnected to LazyVolt Cloud."
     },
     "error": {
       "cannot_connect": "Cannot connect to LazyVolt Cloud. Check the URL and try again.",
       "invalid_auth": "Invalid email or password.",
+      "edge_name_in_use": "Another LazyVolt entry already uses this edge name.",
       "unknown": "Unexpected error. Check the logs for details."
+    }
+  },
+  "entity": {
+    "binary_sensor": {
+      "cloud_connected": {
+        "name": "Cloud connection"
+      }
+    },
+    "sensor": {
+      "mode": {
+        "name": "Charge mode",
+        "state": {
+          "solar": "Solar",
+          "max": "Max",
+          "standby": "Standby"
+        }
+      },
+      "last_decision": {
+        "name": "Last decision"
+      }
     }
   }
 }

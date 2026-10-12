@@ -147,19 +147,112 @@ async def test_user_step_cannot_connect_shows_error(hass, mock_peblar_entry):
 
 
 async def test_no_peblar_aborts_flow(hass):
-    """No Peblar integration installed → flow aborts with reason."""
+    """No Peblar integration installed → flow aborts before asking for credentials."""
+    result = await hass.config_entries.flow.async_init(
+        DOMAIN, context={"source": config_entries.SOURCE_USER}
+    )
+
+    assert result["type"] == "abort"
+    assert result["reason"] == "no_peblar"
+
+
+async def test_same_charger_cannot_be_added_twice(hass, mock_config_entry, mock_peblar_entry):
+    """Charger already controlled → abort before logging in, so Cloud keeps the existing token."""
+    mock_peblar_entry.add_to_hass(hass)
+    mock_config_entry.add_to_hass(hass)
+
+    with patch(
+        "custom_components.lazyvolt.config_flow.LazyVoltApiClient.authenticate",
+        new_callable=AsyncMock,
+    ) as authenticate:
+        result = await hass.config_entries.flow.async_init(
+            DOMAIN, context={"source": config_entries.SOURCE_USER}
+        )
+
+    assert result["type"] == "abort"
+    assert result["reason"] == "already_configured"
+    authenticate.assert_not_called()
+
+
+async def test_second_charger_with_same_edge_name_shows_error(hass, mock_config_entry, mock_peblar_entry):
+    """Reusing an edge name would revoke the first charger's token in Cloud → rejected in the form."""
+    mock_peblar_entry.add_to_hass(hass)
+    MockConfigEntry(domain=PEBLAR_DOMAIN, title="Garage", entry_id="entry_garage").add_to_hass(hass)
+    mock_config_entry.add_to_hass(hass)
+
     with patch("custom_components.lazyvolt.config_flow._DEV_MODE", False), patch(
         "custom_components.lazyvolt.config_flow.LazyVoltApiClient.authenticate",
         new_callable=AsyncMock,
-        return_value=MOCK_TOKEN,
-    ):
+    ) as authenticate:
         result = await hass.config_entries.flow.async_init(
             DOMAIN, context={"source": config_entries.SOURCE_USER}
         )
         result = await hass.config_entries.flow.async_configure(
             result["flow_id"],
-            {"edge_name": "HA", "email": "u@e.com", "password": "p"},
+            {"edge_name": "Home Assistant", "email": "u@e.com", "password": "p"},
         )
 
-    assert result["type"] == "abort"
-    assert result["reason"] == "no_peblar"
+    assert result["errors"]["edge_name"] == "edge_name_in_use"
+    authenticate.assert_not_called()
+
+
+async def test_second_charger_is_auto_selected(hass, mock_config_entry, mock_peblar_entry):
+    """First charger already controlled → the remaining one is picked without asking."""
+    mock_peblar_entry.add_to_hass(hass)
+    MockConfigEntry(domain=PEBLAR_DOMAIN, title="Garage", entry_id="entry_garage").add_to_hass(hass)
+    mock_config_entry.add_to_hass(hass)
+
+    with patch("custom_components.lazyvolt.config_flow._DEV_MODE", False), patch(
+        "custom_components.lazyvolt.config_flow.LazyVoltApiClient.authenticate",
+        new_callable=AsyncMock,
+        return_value=MOCK_TOKEN,
+    ), patch("custom_components.lazyvolt.async_setup_entry", return_value=True):
+        result = await hass.config_entries.flow.async_init(
+            DOMAIN, context={"source": config_entries.SOURCE_USER}
+        )
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"],
+            {"edge_name": "Garage", "email": "u@e.com", "password": "p"},
+        )
+
+    assert result["type"] == "create_entry"
+    assert result["data"][CONF_PEBLAR_ENTRY_ID] == "entry_garage"
+    assert result["result"].unique_id == "entry_garage"
+
+
+async def test_reauth_stores_new_token(hass, mock_config_entry):
+    """Token revoked in Cloud → user logs in again → entry gets the fresh token."""
+    mock_config_entry.add_to_hass(hass)
+
+    with patch(
+        "custom_components.lazyvolt.config_flow.LazyVoltApiClient.authenticate",
+        new_callable=AsyncMock,
+        return_value="2|fresh_token",
+    ) as authenticate, patch("custom_components.lazyvolt.async_setup_entry", return_value=True):
+        result = await mock_config_entry.start_reauth_flow(hass)
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"], {"email": "u@e.com", "password": "p"}
+        )
+        await hass.async_block_till_done()
+
+    assert result["reason"] == "reauth_successful"
+    assert mock_config_entry.data[CONF_CLOUD_TOKEN] == "2|fresh_token"
+    assert authenticate.call_args[0][2] == "Home Assistant"
+
+
+async def test_reauth_with_wrong_password_shows_error(hass, mock_config_entry):
+    """Wrong password during reauth keeps the form open and the old token in place."""
+    mock_config_entry.add_to_hass(hass)
+
+    with patch(
+        "custom_components.lazyvolt.config_flow.LazyVoltApiClient.authenticate",
+        new_callable=AsyncMock,
+        side_effect=LazyVoltAuthError("Invalid credentials"),
+    ):
+        result = await mock_config_entry.start_reauth_flow(hass)
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"], {"email": "u@e.com", "password": "wrong"}
+        )
+
+    assert result["errors"]["base"] == "invalid_auth"
+    assert mock_config_entry.data[CONF_CLOUD_TOKEN] == MOCK_TOKEN

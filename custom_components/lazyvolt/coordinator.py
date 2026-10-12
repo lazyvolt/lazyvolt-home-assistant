@@ -6,12 +6,16 @@ from datetime import timedelta
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import ConfigEntryAuthFailed
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
+from homeassistant.util import dt as dt_util
 
-from .api import LazyVoltApiClient, LazyVoltApiError
+from .api import LazyVoltApiClient, LazyVoltApiError, LazyVoltAuthError
 from .const import (
     CLOUD_MODE_TO_PEBLAR,
+    CONF_PEBLAR_ENTRY_ID,
+    CloudMode,
     DOMAIN,
     PEBLAR_CP_STATE_TO_CLOUD_STATUS,
     PEBLAR_DOMAIN,
@@ -90,23 +94,34 @@ def _str_state(hass: HomeAssistant, entity_id: str | None) -> str | None:
     return state.state
 
 
+def parse_mode(decision: object) -> CloudMode | None:
+    """Return the Cloud mode, or None when the decision is missing or unrecognised."""
+    if not isinstance(decision, dict):
+        return None
+    try:
+        return CloudMode(decision.get("mode"))
+    except ValueError:
+        return None
+
+
 class LazyVoltCoordinator(DataUpdateCoordinator):
     """Polls Cloud for charge decisions, applies them to Peblar, posts telemetry."""
 
     def __init__(
         self,
         hass: HomeAssistant,
+        entry: ConfigEntry,
         api: LazyVoltApiClient,
-        peblar_entry_id: str,
     ) -> None:
         super().__init__(
             hass,
             _LOGGER,
+            config_entry=entry,
             name=DOMAIN,
             update_interval=timedelta(seconds=UPDATE_INTERVAL),
         )
         self._api = api
-        self._peblar_entry_id = peblar_entry_id
+        self._peblar_entry_id = entry.data[CONF_PEBLAR_ENTRY_ID]
         self._entity_ids: dict[str, str | None] = {}
 
     def setup_entity_ids(self) -> None:
@@ -131,14 +146,14 @@ class LazyVoltCoordinator(DataUpdateCoordinator):
         _LOGGER.debug("Resolved Peblar entity IDs: %s", self._entity_ids)
 
     async def _async_update_data(self) -> dict:
-        try:
-            decision = await self._api.get_decision()
-        except LazyVoltApiError as err:
-            raise UpdateFailed(str(err)) from err
+        decision = await self._fetch_decision()
+        decision_at = dt_util.utcnow()
 
-        mode = decision.get("mode", "SOLAR")
-
-        await self._apply_mode(mode)
+        mode = parse_mode(decision)
+        if mode is None:
+            _LOGGER.warning("Unrecognised Cloud decision %s, leaving charger untouched", decision)
+        else:
+            await self._apply_mode(mode)
 
         peblar = self._read_peblar_state()
 
@@ -150,7 +165,7 @@ class LazyVoltCoordinator(DataUpdateCoordinator):
                 "charger_on": peblar.get("charge_on"),
                 "kwh_session": peblar.get("energy_session"),
                 "charger_status": peblar.get("cloud_status"),
-                "mode": mode,
+                "mode": mode.value if mode else None,
             })
         except LazyVoltApiError:
             _LOGGER.warning("Failed to post telemetry", exc_info=True)
@@ -161,14 +176,23 @@ class LazyVoltCoordinator(DataUpdateCoordinator):
             except LazyVoltApiError:
                 _LOGGER.warning("Failed to post progress", exc_info=True)
 
-        return {"mode": mode, "decision": decision, **peblar}
+        return {"mode": mode, "decision": decision, "decision_at": decision_at, **peblar}
 
-    async def _apply_mode(self, mode: str) -> None:
+    async def _fetch_decision(self) -> object:
+        """Fetch the current decision; a rejected token starts the reauth flow."""
+        try:
+            return await self._api.get_decision()
+        except LazyVoltAuthError as err:
+            raise ConfigEntryAuthFailed(str(err)) from err
+        except LazyVoltApiError as err:
+            raise UpdateFailed(str(err)) from err
+
+    async def _apply_mode(self, mode: CloudMode) -> None:
         """Set the Peblar charger to the mode dictated by Cloud."""
         charge_entity = self._entity_ids.get("charge")
         smart_charging_entity = self._entity_ids.get("smart_charging")
 
-        if mode == "STANDBY":
+        if mode is CloudMode.STANDBY:
             if charge_entity:
                 await self.hass.services.async_call(
                     "switch", "turn_off",

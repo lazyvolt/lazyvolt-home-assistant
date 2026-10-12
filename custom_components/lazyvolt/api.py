@@ -56,11 +56,14 @@ class LazyVoltApiClient:
                 return data["token"]
         except LazyVoltAuthError:
             raise
-        except aiohttp.ClientError as err:
+        except (aiohttp.ClientError, TimeoutError) as err:
             raise LazyVoltApiError(f"Cannot connect to LazyVolt Cloud: {err}") from err
 
     async def get_decision(self) -> dict:
-        """GET /api/v1/edge/decision — returns {mode, phases, amps}."""
+        """GET /api/v1/edge/decision — returns {mode, phases, amps}.
+
+        Raises LazyVoltAuthError on 401 so the integration can prompt for reauth.
+        """
         url = f"{self._cloud_url}/api/v1/edge/decision"
         try:
             async with self._session.get(
@@ -68,9 +71,11 @@ class LazyVoltApiClient:
                 headers=self._headers(),
                 timeout=aiohttp.ClientTimeout(total=10),
             ) as resp:
+                if resp.status == 401:
+                    raise LazyVoltAuthError("Cloud token rejected")
                 resp.raise_for_status()
                 return await resp.json()
-        except aiohttp.ClientError as err:
+        except (aiohttp.ClientError, TimeoutError) as err:
             raise LazyVoltApiError(f"Error fetching decision: {err}") from err
 
     async def post_telemetry(self, data: dict) -> None:
@@ -84,7 +89,7 @@ class LazyVoltApiClient:
                 timeout=aiohttp.ClientTimeout(total=10),
             ) as resp:
                 resp.raise_for_status()
-        except aiohttp.ClientError as err:
+        except (aiohttp.ClientError, TimeoutError) as err:
             raise LazyVoltApiError(f"Error posting telemetry: {err}") from err
 
     async def post_progress(self, meter_energy_total_wh: int) -> None:
@@ -100,5 +105,5 @@ class LazyVoltApiClient:
                 if resp.status == 404:
                     return  # no active goal — normal
                 resp.raise_for_status()
-        except aiohttp.ClientError as err:
+        except (aiohttp.ClientError, TimeoutError) as err:
             raise LazyVoltApiError(f"Error posting progress: {err}") from err

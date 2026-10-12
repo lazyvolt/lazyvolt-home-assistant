@@ -1,10 +1,17 @@
 """Constants for the LazyVolt integration."""
 
+from enum import StrEnum
+
+from homeassistant.const import Platform
+
 DOMAIN = "lazyvolt"
 PRODUCTION_CLOUD_URL = "https://lazyvolt.com"
 DEFAULT_CLOUD_URL = "http://host.docker.internal:80"
 DEFAULT_EDGE_NAME = "Home Assistant"
 UPDATE_INTERVAL = 30  # seconds
+DASHBOARD_PATH = "/app/dashboard"
+
+PLATFORMS: list[Platform] = [Platform.BINARY_SENSOR, Platform.SENSOR]
 
 # Peblar integration domain
 PEBLAR_DOMAIN = "peblar"
@@ -26,10 +33,19 @@ PEBLAR_SENSOR_CP_STATE = "cp_state"
 PEBLAR_SWITCH_CHARGE = "charge"
 PEBLAR_SWITCH_FORCE_SINGLE_PHASE = "force_single_phase"
 
+
+class CloudMode(StrEnum):
+    """Charge modes Cloud may dictate. Anything else leaves the charger untouched."""
+
+    SOLAR = "SOLAR"
+    MAX = "MAX"
+    STANDBY = "STANDBY"
+
+
 # Cloud mode → Peblar smart charging select option
-CLOUD_MODE_TO_PEBLAR: dict[str, str] = {
-    "SOLAR": "smart_solar",
-    "MAX": "default",
+CLOUD_MODE_TO_PEBLAR: dict[CloudMode, str] = {
+    CloudMode.SOLAR: "smart_solar",
+    CloudMode.MAX: "default",
 }
 
 # Peblar cp_state → Cloud charger_status enum value

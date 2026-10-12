@@ -41,6 +41,7 @@ MOCK_PEBLAR_ENTRY_ID = "peblar_entry_abc123"
 def mock_config_entry() -> MockConfigEntry:
     return MockConfigEntry(
         domain=DOMAIN,
+        title="LazyVolt (Home Assistant)",
         data={
             "cloud_url": MOCK_CLOUD_URL,
             "edge_name": "Home Assistant",
@@ -69,6 +70,16 @@ def mock_api():
     api.post_progress = AsyncMock(return_value=None)
     api.token = MOCK_TOKEN
     return api
+
+
+@pytest.fixture
+async def setup_integration(hass, mock_config_entry, mock_api) -> MockConfigEntry:
+    """Set up the LazyVolt entry against the mocked Cloud API."""
+    mock_config_entry.add_to_hass(hass)
+    with patch("custom_components.lazyvolt.LazyVoltApiClient", return_value=mock_api):
+        await hass.config_entries.async_setup(mock_config_entry.entry_id)
+        await hass.async_block_till_done()
+    return mock_config_entry
 
 
 @pytest.fixture
